@@ -6,7 +6,9 @@ SELECT
     (SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id) FROM staff AS s) AS staff_rows,
     (SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM menu_items AS m) AS menu_rows,
     (SELECT jsonb_agg(to_jsonb(o) ORDER BY o.id) FROM orders AS o) AS order_rows,
-    (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM order_items AS i) AS item_rows;
+    (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM order_items AS i) AS item_rows,
+    (SELECT jsonb_agg(to_jsonb(h) ORDER BY h.id) FROM order_status_history AS h)
+        AS history_rows;
 
 BEGIN;
 
@@ -15,13 +17,13 @@ INSERT INTO staff (full_name, email, role)
 VALUES ('Тестовый официант', 'lab02.demo@restaurant.example', 'waiter')
 RETURNING id, full_name;
 
-INSERT INTO orders (order_number, table_id, staff_id, opened_at, status, guest_note)
+INSERT INTO orders (order_number, table_id, staff_id, opened_at, status_code, guest_note)
 SELECT 'L2-DML-DEMO', t.id, s.id, TIMESTAMPTZ '2026-10-15 12:00:00+03',
        'open', 'Демонстрация транзакции'
 FROM dining_tables AS t
 CROSS JOIN staff AS s
 WHERE t.table_number = 5 AND s.email = 'lab02.demo@restaurant.example'
-RETURNING id, order_number, status;
+RETURNING id, order_number, status_code;
 
 INSERT INTO order_items (order_id, menu_item_id, quantity, unit_price)
 SELECT o.id, mi.id, 1, mi.price
@@ -35,9 +37,9 @@ RETURNING order_id, menu_item_id, quantity, unit_price;
 
 -- 2. Гость отменил существующий открытый заказ до добавления позиций.
 -- Заказ пуст и не оплачен, поэтому возврат денег не требуется.
-UPDATE orders SET status = 'cancelled'
-WHERE order_number = 'L2-202608-06' AND status = 'open'
-RETURNING order_number, status;
+UPDATE orders SET status_code = 'cancelled'
+WHERE order_number = 'L2-202608-06' AND status_code = 'open'
+RETURNING order_number, status_code;
 
 -- 3. Акция: скидка 10% на доступные десерты дороже 300 рублей.
 -- Исторические цены в order_items эта операция не изменяет.
@@ -59,10 +61,23 @@ BEGIN
     END;
 END $$;
 
--- Корректный порядок: сначала дочерние строки, затем родительские.
+-- Корректный порядок: позиции и созданная триггером история, затем заказ
+-- и сотрудник. Все удаления относятся только к демонстрационным строкам.
 DELETE FROM order_items
 WHERE order_id = (SELECT id FROM orders WHERE order_number = 'L2-DML-DEMO')
 RETURNING order_id, menu_item_id;
+DO $$
+BEGIN
+    BEGIN
+        DELETE FROM orders WHERE order_number = 'L2-DML-DEMO';
+        RAISE EXCEPTION 'Ожидался запрет удаления заказа с историей';
+    EXCEPTION WHEN foreign_key_violation THEN
+        RAISE NOTICE 'Удаление заказа с историей отклонено внешним ключом';
+    END;
+END $$;
+DELETE FROM order_status_history
+WHERE order_id = (SELECT id FROM orders WHERE order_number = 'L2-DML-DEMO')
+RETURNING order_id, status_code;
 DELETE FROM orders WHERE order_number = 'L2-DML-DEMO'
 RETURNING order_number;
 DELETE FROM staff WHERE email = 'lab02.demo@restaurant.example'
@@ -83,6 +98,9 @@ BEGIN
                   (SELECT jsonb_agg(to_jsonb(o) ORDER BY o.id) FROM orders AS o)
            OR before.item_rows IS DISTINCT FROM
                   (SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM order_items AS i)
+           OR before.history_rows IS DISTINCT FROM
+                  (SELECT jsonb_agg(to_jsonb(h) ORDER BY h.id)
+                   FROM order_status_history AS h)
     ) THEN
         RAISE EXCEPTION 'ROLLBACK не восстановил исходные строки';
     END IF;
@@ -90,7 +108,7 @@ BEGIN
 END $$;
 DROP TABLE lab02_dml_snapshot;
 
-SELECT order_number, status FROM orders WHERE order_number = 'L2-202608-06';
+SELECT order_number, status_code FROM orders WHERE order_number = 'L2-202608-06';
 SELECT mi.name, mi.price
 FROM menu_items AS mi
 JOIN menu_categories AS c ON c.id = mi.category_id

@@ -1,7 +1,7 @@
 -- 2.1.1. Подробный состав неотменённых заказов за октябрь 2026 года:
 -- заказ, сотрудник, столик, блюдо, категория, количество и стоимость.
 -- Шесть таблиц; одна строка результата соответствует позиции заказа.
-SELECT o.order_number, o.opened_at, o.status, s.full_name,
+SELECT o.order_number, o.opened_at, o.status_code, s.full_name,
        t.table_number, c.name AS category, mi.name AS item,
        oi.quantity, oi.unit_price, oi.quantity * oi.unit_price AS line_total
 FROM orders AS o
@@ -12,7 +12,7 @@ JOIN menu_items AS mi ON mi.id = oi.menu_item_id
 JOIN menu_categories AS c ON c.id = mi.category_id
 WHERE o.opened_at >= TIMESTAMPTZ '2026-10-01 00:00:00+03'
   AND o.opened_at < TIMESTAMPTZ '2026-11-01 00:00:00+03'
-  AND o.status <> 'cancelled'
+  AND o.status_code <> 'cancelled'
 ORDER BY o.opened_at, o.order_number, c.name, mi.name;
 
 -- 2.1.2. Блюда, которые ни разу не включали в заказ.
@@ -39,6 +39,6 @@ JOIN order_items AS oi ON oi.order_id = o.id
 JOIN menu_items AS mi ON mi.id = oi.menu_item_id
 JOIN menu_categories AS c ON c.id = mi.category_id
 JOIN payments AS p ON p.order_id = o.id
-WHERE o.status = 'closed' AND t.seats >= 4
+WHERE o.status_code = 'closed' AND t.seats >= 4
   AND c.name = 'Основные блюда' AND p.method = 'card'
 ORDER BY o.opened_at, o.order_number;

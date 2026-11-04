@@ -17,8 +17,16 @@ BEGIN
     IF (SELECT COUNT(*) FROM orders) < 30 THEN
         RAISE EXCEPTION 'В основной операционной таблице меньше 30 заказов';
     END IF;
-    IF (SELECT COUNT(DISTINCT status) FROM orders) < 3 THEN
+    IF (SELECT COUNT(DISTINCT status_code) FROM orders) < 3 THEN
         RAISE EXCEPTION 'Меньше трёх состояний заказа';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM orders AS o
+        WHERE NOT EXISTS (
+            SELECT 1 FROM order_status_history AS h WHERE h.order_id = o.id
+        )
+    ) THEN
+        RAISE EXCEPTION 'Есть заказ без начальной записи истории статусов';
     END IF;
     IF (SELECT COUNT(DISTINCT date_trunc('month', opened_at
             AT TIME ZONE 'Europe/Moscow')) FROM orders) < 3 THEN
@@ -42,7 +50,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM orders WHERE guest_note IS NULL) THEN
         RAISE EXCEPTION 'Нет допустимого NULL';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.status = 'closed'
+    IF NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.status_code = 'closed'
             AND EXISTS (SELECT 1 FROM order_items AS oi WHERE oi.order_id = o.id)
             AND NOT EXISTS (SELECT 1 FROM payments AS p WHERE p.order_id = o.id)) THEN
         RAISE EXCEPTION 'Нет закрытого непустого заказа без оплаты';
@@ -66,9 +74,9 @@ ORDER BY table_name;
 
 SELECT date_trunc('month', opened_at AT TIME ZONE 'Europe/Moscow')::DATE AS month,
        COUNT(*) AS orders_count,
-       COUNT(*) FILTER (WHERE status = 'closed') AS closed_count,
-       COUNT(*) FILTER (WHERE status = 'open') AS open_count,
-       COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_count
+       COUNT(*) FILTER (WHERE status_code = 'closed') AS closed_count,
+       COUNT(*) FILTER (WHERE status_code = 'open') AS open_count,
+       COUNT(*) FILTER (WHERE status_code = 'cancelled') AS cancelled_count
 FROM orders
 GROUP BY month
 ORDER BY month;

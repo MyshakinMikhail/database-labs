@@ -1,9 +1,9 @@
 -- 2.2.1. Нагрузка сотрудников: количество заказов каждого состояния.
 -- COUNT(o.id), в отличие от COUNT(*), даёт 0 для сотрудника без заказов.
 SELECT s.full_name, COUNT(o.id) AS orders_count,
-       COUNT(o.id) FILTER (WHERE o.status = 'open') AS open_count,
-       COUNT(o.id) FILTER (WHERE o.status = 'closed') AS closed_count,
-       COUNT(o.id) FILTER (WHERE o.status = 'cancelled') AS cancelled_count
+       COUNT(o.id) FILTER (WHERE o.status_code = 'open') AS open_count,
+       COUNT(o.id) FILTER (WHERE o.status_code = 'closed') AS closed_count,
+       COUNT(o.id) FILTER (WHERE o.status_code = 'cancelled') AS cancelled_count
 FROM staff AS s
 LEFT JOIN orders AS o ON o.staff_id = s.id
 GROUP BY s.id, s.full_name
@@ -24,7 +24,7 @@ LEFT JOIN (
     FROM order_items
     GROUP BY order_id
 ) AS t ON t.order_id = o.id
-WHERE o.status = 'closed'
+WHERE o.status_code = 'closed'
 GROUP BY s.id, s.full_name
 HAVING SUM(COALESCE(t.total, 0)) >= 10000.00
 ORDER BY closed_sales DESC, s.full_name;
@@ -45,7 +45,7 @@ CROSS JOIN (
 ) AS periods
 LEFT JOIN menu_items AS mi ON mi.category_id = c.id
 LEFT JOIN order_items AS oi ON oi.menu_item_id = mi.id
-LEFT JOIN orders AS o ON o.id = oi.order_id AND o.status = 'closed'
+LEFT JOIN orders AS o ON o.id = oi.order_id AND o.status_code = 'closed'
     AND (o.opened_at AT TIME ZONE 'Europe/Moscow')::DATE >= periods.month
     AND (o.opened_at AT TIME ZONE 'Europe/Moscow')::DATE
         < (periods.month + INTERVAL '1 month')::DATE

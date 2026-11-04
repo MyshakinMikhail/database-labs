@@ -1,5 +1,5 @@
 -- Задание 1.1. Расширение исходной базы ресторана из ЛР 1.
--- Запускать после lab_01/schema.sql и lab_01/data.sql.
+-- Запускать на готовой БД ЛР 1 после lab_01/migration.sql.
 -- Повторный запуск не добавляет дубликаты и не изменяет исходные строки.
 BEGIN;
 
@@ -33,7 +33,7 @@ ON CONFLICT (category_id, name) DO NOTHING;
 
 -- 12 заказов в каждом из трёх месяцев: всего 36 новых заказов.
 -- Дни 4, 8, 12: отменены; 6, 10: открыты; остальные: закрыты.
-INSERT INTO orders (order_number, table_id, staff_id, opened_at, status, guest_note)
+INSERT INTO orders (order_number, table_id, staff_id, opened_at, status_code, guest_note)
 SELECT
     'L2-' || to_char(month_start, 'YYYYMM') || '-' || lpad(day_no::TEXT, 2, '0'),
     t.id,

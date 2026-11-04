@@ -17,7 +17,7 @@ WHERE EXISTS (
     SELECT 1
     FROM orders AS o
     JOIN payments AS p ON p.order_id = o.id
-    WHERE o.staff_id = s.id AND o.status = 'closed' AND p.method = 'cash'
+    WHERE o.staff_id = s.id AND o.status_code = 'closed' AND p.method = 'cash'
 )
 ORDER BY s.full_name;
 
@@ -32,7 +32,7 @@ JOIN (
     FROM order_items
     GROUP BY order_id
 ) AS t ON t.order_id = o.id
-WHERE o.status = 'closed'
+WHERE o.status_code = 'closed'
   AND NOT EXISTS (SELECT 1 FROM payments AS p WHERE p.order_id = o.id)
 ORDER BY o.opened_at, o.order_number;
 
@@ -48,7 +48,7 @@ SELECT s.full_name,
             FROM order_items
             GROUP BY order_id
         ) AS t ON t.order_id = o.id
-        WHERE o.staff_id = s.id AND o.status = 'closed') AS average_closed_check,
+        WHERE o.staff_id = s.id AND o.status_code = 'closed') AS average_closed_check,
        (SELECT MAX(o.opened_at) FROM orders AS o
         WHERE o.staff_id = s.id) AS last_order_at
 FROM staff AS s

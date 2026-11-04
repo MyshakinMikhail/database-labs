@@ -3,6 +3,19 @@
 \pset null 'NULL'
 SET TIME ZONE 'Europe/Moscow';
 
+-- ЛР 2 продолжает окончательную модель ЛР 1; схему здесь не пересоздаём.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'orders'
+          AND column_name = 'status_code'
+    ) OR to_regclass('order_statuses') IS NULL
+      OR to_regclass('order_status_history') IS NULL THEN
+        RAISE EXCEPTION 'ЛР 2 требует завершённую ЛР 1: orders.status_code, справочник и историю статусов. Сначала примените lab_01/migration.sql к исходной схеме.';
+    END IF;
+END $$;
+
 \echo '=== 1.1. Подготовка данных ==='
 \ir prepare_data.sql
 \echo '=== 1.2. INSERT, UPDATE, DELETE и ROLLBACK ==='

@@ -17,7 +17,7 @@ payment_totals AS (
 -- Два набора агрегируются ДО соединения: три позиции и два платежа
 -- не превращаются в шесть строк с завышенными суммами.
 order_metrics AS (
-    SELECT o.id, o.staff_id, o.status,
+    SELECT o.id, o.staff_id, o.status_code,
            date_trunc('month', o.opened_at AT TIME ZONE 'Europe/Moscow')::DATE
                AS month,
            COALESCE(i.order_total, 0) AS order_total,
@@ -31,18 +31,18 @@ order_metrics AS (
 -- Промежуточные показатели -> агрегация по месяцу и сотруднику.
 monthly_summary AS (
     SELECT month, staff_id, COUNT(*) AS orders_count,
-           COUNT(*) FILTER (WHERE status = 'closed') AS closed_count,
-           COUNT(*) FILTER (WHERE status = 'open') AS open_count,
-           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_count,
-           COALESCE(SUM(order_total) FILTER (WHERE status = 'closed'), 0)
+           COUNT(*) FILTER (WHERE status_code = 'closed') AS closed_count,
+           COUNT(*) FILTER (WHERE status_code = 'open') AS open_count,
+           COUNT(*) FILTER (WHERE status_code = 'cancelled') AS cancelled_count,
+           COALESCE(SUM(order_total) FILTER (WHERE status_code = 'closed'), 0)
                AS closed_sales,
-           COALESCE(SUM(paid_total) FILTER (WHERE status = 'closed'), 0)
+           COALESCE(SUM(paid_total) FILTER (WHERE status_code = 'closed'), 0)
                AS collected,
-           COALESCE(SUM(outstanding) FILTER (WHERE status = 'closed'), 0)
+           COALESCE(SUM(outstanding) FILTER (WHERE status_code = 'closed'), 0)
                AS closed_debt,
-           COUNT(*) FILTER (WHERE status = 'closed' AND outstanding > 0)
+           COUNT(*) FILTER (WHERE status_code = 'closed' AND outstanding > 0)
                AS unpaid_closed_count,
-           COALESCE(SUM(outstanding) FILTER (WHERE status = 'open'), 0)
+           COALESCE(SUM(outstanding) FILTER (WHERE status_code = 'open'), 0)
                AS open_balance
     FROM order_metrics
     GROUP BY month, staff_id

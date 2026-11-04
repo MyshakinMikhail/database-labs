@@ -17,8 +17,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parent
-TABLES = ('staff', 'dining_tables', 'menu_categories', 'menu_items',
-          'orders', 'order_items', 'payments')
+DATA_TABLES = ('staff', 'dining_tables', 'menu_categories', 'menu_items',
+               'orders', 'order_items', 'payments')
+TABLES = DATA_TABLES + ('order_statuses', 'order_status_history')
+
+
+def row_key(table):
+    return 'code' if table == 'order_statuses' else 'id'
+
+
 checks = []
 
 
@@ -43,7 +50,8 @@ def same_rows(actual, expected):
 
 
 def main():
-    temp = Path(tempfile.mkdtemp(prefix='lab02-report-'))
+    # Короткий путь нужен из-за ограничения длины Unix-сокета на macOS.
+    temp = Path(tempfile.mkdtemp(prefix='lab02-report-', dir='/tmp'))
     data, sock = temp / 'pgdata', temp / 'socket'
     sock.mkdir()
     started = False
@@ -68,35 +76,115 @@ def main():
             return json.loads(call('-At', '-c', wrapped)[0], parse_float=D)
 
         def snapshot():
-            return {name: query('SELECT * FROM %s ORDER BY id' % name) for name in TABLES}
+            return {name: query('SELECT * FROM %s ORDER BY %s' % (name, row_key(name)))
+                    for name in TABLES}
 
         call('-f', str(ROOT / 'lab_01/schema.sql'), '-f', str(ROOT / 'lab_01/data.sql'))
+        original = {name: query('SELECT * FROM %s ORDER BY id' % name)
+                    for name in DATA_TABLES}
+        # Старую схему необходимо отклонять до первого изменения данных.
+        rejected = subprocess.run(cmd + ['-f', str(ROOT / 'lab_02/run_all.sql')],
+                                  capture_output=True, text=True)
+        unchanged = all(query('SELECT * FROM %s ORDER BY id' % name) == original[name]
+                        for name in DATA_TABLES)
+        check('M01', 'ЛР 2 отклоняет немигрированную схему без изменения данных',
+              rejected.returncode != 0 and 'ЛР 2 требует завершённую ЛР 1' in rejected.stderr
+              and unchanged and not query("SELECT 1 FROM information_schema.columns "
+                  "WHERE table_schema='public' AND table_name='orders' "
+                  "AND column_name='guest_note'"),
+              'Проверено до добавления guest_note и тестовых записей')
+        call('-f', str(ROOT / 'lab_01/migration.sql'))
         before = snapshot()
+        migrated = {name: [dict(row) for row in rows] for name, rows in original.items()}
+        for row in migrated['orders']:
+            row['status_code'] = row.pop('status')
+        check('M02', 'Миграция сохранила все исходные строки и значения статусов',
+              all(before[name] == migrated[name] for name in DATA_TABLES),
+              'Единственное изменение исходных полей: status -> status_code')
+        check('M03', 'Справочник и начальная история соответствуют заказам ЛР 1',
+              {r['code'] for r in before['order_statuses']} == {'open', 'closed', 'cancelled'}
+              and len(before['order_status_history']) == len(before['orders'])
+              and all(any(h['order_id'] == o['id'] and h['status_code'] == o['status_code']
+                          and h['is_backfilled'] for h in before['order_status_history'])
+                      for o in before['orders']),
+              {'statuses': len(before['order_statuses']),
+               'backfilled': len(before['order_status_history'])})
+        _, history_checks = call('-c', """
+            BEGIN;
+            DO $$
+            DECLARE
+                demo_id INT;
+            BEGIN
+                INSERT INTO orders (order_number, table_id, staff_id, status_code)
+                VALUES ('L2-VERIFY-HISTORY', (SELECT MIN(id) FROM dining_tables),
+                        (SELECT MIN(id) FROM staff), 'open') RETURNING id INTO demo_id;
+                IF (SELECT COUNT(*) FROM order_status_history WHERE order_id = demo_id
+                    AND status_code = 'open' AND NOT is_backfilled) <> 1 THEN
+                    RAISE EXCEPTION 'Нет начального статуса нового заказа';
+                END IF;
+                UPDATE orders SET status_code = 'open' WHERE id = demo_id;
+                IF (SELECT COUNT(*) FROM order_status_history WHERE order_id = demo_id) <> 1 THEN
+                    RAISE EXCEPTION 'Повтор того же статуса создал лишнюю историю';
+                END IF;
+                UPDATE orders SET status_code = 'closed' WHERE id = demo_id;
+                IF (SELECT COUNT(*) FROM order_status_history WHERE order_id = demo_id) <> 2
+                   OR (SELECT COUNT(*) FROM order_status_history WHERE order_id = demo_id
+                       AND status_code = 'closed' AND NOT is_backfilled) <> 1 THEN
+                    RAISE EXCEPTION 'Смена статуса не зарегистрирована';
+                END IF;
+                RAISE NOTICE 'История: INSERT, смена и повтор статуса проверены';
+                BEGIN
+                    UPDATE orders SET status_code = 'invalid-status' WHERE id = demo_id;
+                    RAISE EXCEPTION 'Неизвестный статус принят';
+                EXCEPTION WHEN foreign_key_violation THEN
+                    RAISE NOTICE 'Неизвестный статус отклонён';
+                END;
+                BEGIN
+                    DELETE FROM orders WHERE id = demo_id;
+                    RAISE EXCEPTION 'Удалён заказ с историей';
+                EXCEPTION WHEN foreign_key_violation THEN
+                    RAISE NOTICE 'История защищает заказ от удаления';
+                END;
+            END $$;
+            ROLLBACK;
+        """)
+        check('M04', 'Триггер сохраняет начальный и новый статус без дублей',
+              'История: INSERT, смена и повтор статуса проверены' in history_checks,
+              'Количество событий: 1 после INSERT, 1 после повтора, 2 после смены')
+        check('M05', 'Внешние ключи защищают код статуса и историю заказа',
+              'Неизвестный статус отклонён' in history_checks
+              and 'История защищает заказ от удаления' in history_checks,
+              'Обе недопустимые операции отклонены foreign_key_violation')
+        check('M06', 'ROLLBACK откатил тестовые заказы и события истории',
+              snapshot() == before, 'Полное сравнение девяти таблиц')
         stdout, stderr = call('-f', str(ROOT / 'lab_02/run_all.sql'))
-        (OUT / 'run_all.txt').write_text(stdout + '\n' + stderr)
+        run_output = '\n'.join(line.rstrip() for line in
+                               (stdout + '\n' + stderr).splitlines()) + '\n'
         after = snapshot()
         preserved = True
         for table in TABLES:
-            indexed = {row['id']: row for row in after[table]}
+            key = row_key(table)
+            indexed = {row[key]: row for row in after[table]}
             for old in before[table]:
-                preserved = preserved and old['id'] in indexed
-                preserved = preserved and all(indexed.get(old['id'], {}).get(k) == v
+                preserved = preserved and old[key] in indexed
+                preserved = preserved and all(indexed.get(old[key], {}).get(k) == v
                                               for k, v in old.items())
         check('B01', 'Исходные строки и значения ЛР 1 сохранены', preserved,
               {'before': {t: len(before[t]) for t in TABLES},
                'after': {t: len(after[t]) for t in TABLES}})
-        check('B02', 'ROLLBACK восстановил строки четырёх таблиц',
+        check('B02', 'ROLLBACK восстановил строки пяти таблиц, включая историю',
               'ROLLBACK проверен: строки всех затронутых таблиц восстановлены' in stderr,
               'Проверка JSONB-снимков встроена в dml.sql')
         check('B03', 'Удаление родителя с дочерними строками запрещено',
-              'Удаление сотрудника с заказом отклонено внешним ключом' in stderr,
-              'Перехвачен foreign_key_violation; выполнено удаление детей перед родителем')
+              'Удаление сотрудника с заказом отклонено внешним ключом' in stderr
+              and 'Удаление заказа с историей отклонено внешним ключом' in stderr,
+              'Проверены связи сотрудника и истории; дочерние строки удалены первыми')
         _, constraints = call('-f', str(ROOT / 'lab_01/constraints_test.sql'))
         check('B04', 'Восемь проверок ограничений ЛР 1 проходят после ЛР 2',
               sum('пройден:' in line for line in constraints.splitlines()) == 8,
               constraints.strip().splitlines())
         check('B05', 'Проверки ограничений не изменили строки', snapshot() == after,
-              'Полное сравнение содержимого всех семи таблиц')
+              'Полное сравнение содержимого всех девяти таблиц')
 
         orders = after['orders']
         oi_by_order = defaultdict(list)
@@ -117,10 +205,11 @@ def main():
             dt.timezone(dt.timedelta(hours=3))).date().replace(day=1).isoformat()
         months = sorted({month(o) for o in orders})
         check('D01', 'Не менее 100 содержательных записей',
-              sum(len(v) for v in after.values()) >= 100, sum(len(v) for v in after.values()))
+              sum(len(after[t]) for t in DATA_TABLES) >= 100,
+              sum(len(after[t]) for t in DATA_TABLES))
         check('D02', 'Не менее 30 заказов', len(orders) >= 30, len(orders))
-        check('D03', 'Три состояния процесса', len({o['status'] for o in orders}) >= 3,
-              {s: sum(o['status'] == s for o in orders) for s in ['open', 'closed', 'cancelled']})
+        check('D03', 'Три состояния процесса', len({o['status_code'] for o in orders}) >= 3,
+              {s: sum(o['status_code'] == s for o in orders) for s in ['open', 'closed', 'cancelled']})
         check('D04', 'Три календарных месяца', len(months) >= 3, months)
         check('D05', 'Повторные операции одной сущности',
               any(sum(o['staff_id'] == s for o in orders) > 1 for s in people),
@@ -148,12 +237,12 @@ def main():
 
         expected = []
         for o in orders:
-            if month(o) != '2026-10-01' or o['status'] == 'cancelled':
+            if month(o) != '2026-10-01' or o['status_code'] == 'cancelled':
                 continue
             for i in oi_by_order[o['id']]:
                 mi = items[i['menu_item_id']]
                 expected.append(dict(order_number=o['order_number'], opened_at=o['opened_at'],
-                    status=o['status'], full_name=people[o['staff_id']]['full_name'],
+                    status_code=o['status_code'], full_name=people[o['staff_id']]['full_name'],
                     table_number=tables[o['table_id']]['table_number'],
                     category=cats[mi['category_id']]['name'], item=mi['name'],
                     quantity=i['quantity'], unit_price=D(i['unit_price']),
@@ -169,7 +258,7 @@ def main():
         expected = []
         for o in orders:
             t = tables[o['table_id']]
-            if (o['status'] == 'closed' and t['seats'] >= 4
+            if (o['status_code'] == 'closed' and t['seats'] >= 4
                     and any(cats[items[i['menu_item_id']]['category_id']]['name'] == 'Основные блюда'
                             for i in oi_by_order[o['id']])
                     and any(p['method'] == 'card' for p in pay_by_order[o['id']])):
@@ -182,9 +271,9 @@ def main():
         expected_personal = []
         for s in people.values():
             own = [o for o in orders if o['staff_id'] == s['id']]
-            sums = [amount[o['id']] for o in own if o['status'] == 'closed']
+            sums = [amount[o['id']] for o in own if o['status_code'] == 'closed']
             expected.append(dict(full_name=s['full_name'], orders_count=len(own),
-                **{status + '_count': sum(o['status'] == status for o in own)
+                **{status + '_count': sum(o['status_code'] == status for o in own)
                    for status in ('open','closed','cancelled')}))
             if sum(sums) >= 10000:
                 expected_checks.append(dict(full_name=s['full_name'], closed_count=len(sums),
@@ -200,7 +289,7 @@ def main():
         expected = []
         for m in months:
             for c in cats.values():
-                pairs = [(o, i) for o in orders if month(o) == m and o['status'] == 'closed'
+                pairs = [(o, i) for o in orders if month(o) == m and o['status_code'] == 'closed'
                          for i in oi_by_order[o['id']]
                          if items[i['menu_item_id']]['category_id'] == c['id']]
                 expected.append(dict(month=m, category=c['name'],
@@ -219,13 +308,13 @@ def main():
         check('Q31', '3.1: сравнение со средним своей категории',
               same_rows(queries['3.1']['rows'], expected), {'rows':len(expected)})
         expected = [dict(full_name=s['full_name'], email=s['email']) for s in people.values()
-                    if any(o['staff_id'] == s['id'] and o['status'] == 'closed'
+                    if any(o['staff_id'] == s['id'] and o['status_code'] == 'closed'
                         and any(p['method'] == 'cash' for p in pay_by_order[o['id']]) for o in orders)]
         check('Q32', '3.2: EXISTS с дополнительным условием',
               same_rows(queries['3.2']['rows'], expected), {'rows':len(expected)})
         expected = [dict(order_number=o['order_number'], full_name=people[o['staff_id']]['full_name'],
                          unpaid_amount=amount[o['id']]) for o in orders
-                    if o['status'] == 'closed' and oi_by_order[o['id']] and not pay_by_order[o['id']]]
+                    if o['status_code'] == 'closed' and oi_by_order[o['id']] and not pay_by_order[o['id']]]
         check('Q33', '3.3: NOT EXISTS находит отсутствие оплат',
               same_rows(queries['3.3']['rows'], expected), {'rows':len(expected)})
         check('Q34', '3.4: индивидуальные показатели и NULL',
@@ -234,26 +323,28 @@ def main():
         for m in months:
             for s in people.values():
                 own = [o for o in orders if month(o) == m and o['staff_id'] == s['id']]
-                closed = [o for o in own if o['status'] == 'closed']
+                closed = [o for o in own if o['status_code'] == 'closed']
                 sales = sum((amount[o['id']] for o in closed),D(0))
                 got = sum((paid[o['id']] for o in closed),D(0))
                 expected.append(dict(month=m, full_name=s['full_name'], orders_count=len(own),
-                    **{st+'_count':sum(o['status']==st for o in own) for st in ('open','closed','cancelled')},
+                    **{st+'_count':sum(o['status_code']==st for o in own) for st in ('open','closed','cancelled')},
                     closed_sales=sales, collected=got,
                     closed_debt=sum((max(amount[o['id']]-paid[o['id']],D(0)) for o in closed),D(0)),
                     unpaid_closed_count=sum(amount[o['id']] > paid[o['id']] for o in closed),
-                    open_balance=sum((max(amount[o['id']]-paid[o['id']],D(0)) for o in own if o['status']=='open'),D(0)),
+                    open_balance=sum((max(amount[o['id']]-paid[o['id']],D(0)) for o in own if o['status_code']=='open'),D(0)),
                     collection_percent=rounded(100*got/sales) if sales else None))
         check('Q4', '4: все показатели CTE-отчёта совпали с независимым расчётом',
               same_rows(queries['4']['rows'], expected), {'rows':len(expected), 'fields_per_row':12})
         call('-f', str(ROOT / 'lab_02/run_all.sql'))
         check('B06', 'Повторный полный запуск не создаёт дубли и не меняет строки',
-              snapshot() == after, 'Сравнены все 202 строки семи таблиц; последовательности в сравнение не входят')
+              snapshot() == after,
+              'Сравнены девять таблиц, включая справочник и историю; последовательности не сравниваются')
         version = call('-At', '-c', 'SELECT version()')[0].strip()
         files = [ROOT/'lab_01/schema.sql', ROOT/'lab_01/data.sql',
-                 ROOT/'lab_01/constraints_test.sql'] + sorted((ROOT/'lab_02').glob('*.sql'))
+                 ROOT/'lab_01/constraints_test.sql', ROOT/'lab_01/migration.sql'] + sorted((ROOT/'lab_02').glob('*.sql'))
         evidence = dict(checked_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                         postgres=version, before=before, after=after, checks=checks, queries=queries,
+                        data_tables=DATA_TABLES,
                         sources={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest()
                                  for p in files})
         (OUT/'evidence.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2,default=str))
@@ -261,6 +352,8 @@ def main():
             '%s | PASS | %s | %s' % (c['id'],c['title'],json.dumps(c['detail'],ensure_ascii=False,default=str))
             for c in checks]
         (OUT/'verification.txt').write_text('\n'.join(lines)+'\n')
+        (OUT/'run_all.txt').write_text(run_output)
+        (ROOT/'lab_02/results.txt').write_text(run_output)
         print('\n'.join(lines))
     finally:
         if started:
