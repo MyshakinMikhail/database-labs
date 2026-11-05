@@ -1,6 +1,3 @@
--- Задание 1.2. Все демонстрационные изменения отменяются в конце.
--- Снимок строк проверяет ROLLBACK. Последовательности IDENTITY, как принято
--- в PostgreSQL, не откатываются; пропуски идентификаторов допустимы.
 CREATE TEMP TABLE lab02_dml_snapshot AS
 SELECT
     (SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id) FROM staff AS s) AS staff_rows,
@@ -12,7 +9,6 @@ SELECT
 
 BEGIN;
 
--- 1. Новая сущность (сотрудник), его заказ и две связанные позиции.
 INSERT INTO staff (full_name, email, role)
 VALUES ('Тестовый официант', 'lab02.demo@restaurant.example', 'waiter')
 RETURNING id, full_name;
@@ -35,14 +31,10 @@ WHERE o.order_number = 'L2-DML-DEMO'
     OR (c.name = 'Напитки' AND mi.name = 'Чай'))
 RETURNING order_id, menu_item_id, quantity, unit_price;
 
--- 2. Гость отменил существующий открытый заказ до добавления позиций.
--- Заказ пуст и не оплачен, поэтому возврат денег не требуется.
 UPDATE orders SET status_code = 'cancelled'
 WHERE order_number = 'L2-202608-06' AND status_code = 'open'
 RETURNING order_number, status_code;
 
--- 3. Акция: скидка 10% на доступные десерты дороже 300 рублей.
--- Исторические цены в order_items эта операция не изменяет.
 UPDATE menu_items AS mi
 SET price = ROUND(mi.price * 0.90, 2)
 FROM menu_categories AS c
@@ -50,19 +42,14 @@ WHERE mi.category_id = c.id AND c.name = 'Десерты'
   AND mi.is_available AND mi.price > 300.00
 RETURNING mi.name, mi.price;
 
--- 4. Попытка удалить сотрудника с заказом отклоняется ON DELETE RESTRICT.
 DO $$
 BEGIN
-    BEGIN
-        DELETE FROM staff WHERE email = 'lab02.demo@restaurant.example';
-        RAISE EXCEPTION 'Ожидался запрет удаления сотрудника с заказом';
-    EXCEPTION WHEN foreign_key_violation THEN
-        RAISE NOTICE 'Удаление сотрудника с заказом отклонено внешним ключом';
-    END;
+    DELETE FROM staff WHERE email = 'lab02.demo@restaurant.example';
+    RAISE EXCEPTION 'Ожидался запрет удаления сотрудника с заказом';
+EXCEPTION WHEN foreign_key_violation THEN
+    RAISE NOTICE 'Удаление сотрудника с заказом отклонено внешним ключом';
 END $$;
 
--- Корректный порядок: позиции и созданная триггером история, затем заказ
--- и сотрудник. Все удаления относятся только к демонстрационным строкам.
 DELETE FROM order_items
 WHERE order_id = (SELECT id FROM orders WHERE order_number = 'L2-DML-DEMO')
 RETURNING order_id, menu_item_id;
@@ -83,7 +70,6 @@ RETURNING order_number;
 DELETE FROM staff WHERE email = 'lab02.demo@restaurant.example'
 RETURNING full_name;
 
--- 5. Отмена UPDATE и всех INSERT/DELETE в демонстрации.
 ROLLBACK;
 
 DO $$

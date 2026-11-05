@@ -1,6 +1,3 @@
--- 2.1.1. Подробный состав неотменённых заказов за октябрь 2026 года:
--- заказ, сотрудник, столик, блюдо, категория, количество и стоимость.
--- Шесть таблиц; одна строка результата соответствует позиции заказа.
 SELECT o.order_number, o.opened_at, o.status_code, s.full_name,
        t.table_number, c.name AS category, mi.name AS item,
        oi.quantity, oi.unit_price, oi.quantity * oi.unit_price AS line_total
@@ -15,9 +12,6 @@ WHERE o.opened_at >= TIMESTAMPTZ '2026-10-01 00:00:00+03'
   AND o.status_code <> 'cancelled'
 ORDER BY o.opened_at, o.order_number, c.name, mi.name;
 
--- 2.1.2. Блюда, которые ни разу не включали в заказ.
--- Три таблицы; LEFT JOIN сохраняет блюдо без позиций заказа.
--- Проверяется ключ дочерней строки, а не nullable бизнес-атрибут.
 SELECT c.name AS category, mi.name AS item, mi.price, mi.is_available,
        COALESCE(oi.quantity, 0) AS ordered_portions
 FROM menu_items AS mi
@@ -26,10 +20,6 @@ LEFT JOIN order_items AS oi ON oi.menu_item_id = mi.id
 WHERE oi.id IS NULL
 ORDER BY c.name, mi.name;
 
--- 2.1.3. Закрытые заказы за столиками от четырёх мест, содержащие
--- основное блюдо и хотя бы один платёж картой.
--- DISTINCT нужен, поскольку в заказе может быть несколько подходящих
--- позиций и несколько платежей; результат содержит одну строку на заказ.
 SELECT DISTINCT o.order_number, o.opened_at, s.full_name,
        t.table_number, t.seats
 FROM orders AS o

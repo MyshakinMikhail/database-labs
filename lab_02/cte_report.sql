@@ -1,9 +1,4 @@
--- Часть 4. Какие сотрудники и в какие месяцы обеспечили продажи,
--- сколько получено по закрытым заказам и какая сумма осталась неоплаченной?
--- Месяц определяется датой открытия заказа в часовом поясе ресторана.
--- Оплаты относятся к месяцу заказа: это не отчёт о движении денег по paid_at.
 WITH
--- Исходные данные -> промежуточные суммы: одна строка на заказ в каждом CTE.
 item_totals AS (
     SELECT order_id, SUM(quantity * unit_price) AS order_total
     FROM order_items
@@ -14,8 +9,6 @@ payment_totals AS (
     FROM payments
     GROUP BY order_id
 ),
--- Два набора агрегируются ДО соединения: три позиции и два платежа
--- не превращаются в шесть строк с завышенными суммами.
 order_metrics AS (
     SELECT o.id, o.staff_id, o.status_code,
            date_trunc('month', o.opened_at AT TIME ZONE 'Europe/Moscow')::DATE
@@ -28,7 +21,6 @@ order_metrics AS (
     LEFT JOIN item_totals AS i ON i.order_id = o.id
     LEFT JOIN payment_totals AS p ON p.order_id = o.id
 ),
--- Промежуточные показатели -> агрегация по месяцу и сотруднику.
 monthly_summary AS (
     SELECT month, staff_id, COUNT(*) AS orders_count,
            COUNT(*) FILTER (WHERE status_code = 'closed') AS closed_count,
@@ -47,7 +39,6 @@ monthly_summary AS (
     FROM order_metrics
     GROUP BY month, staff_id
 ),
--- Агрегация -> итог: сохраняем и сотрудников без единого заказа.
 months AS (
     SELECT DISTINCT month FROM order_metrics
 )

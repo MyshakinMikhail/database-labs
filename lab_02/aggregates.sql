@@ -1,5 +1,3 @@
--- 2.2.1. Нагрузка сотрудников: количество заказов каждого состояния.
--- COUNT(o.id), в отличие от COUNT(*), даёт 0 для сотрудника без заказов.
 SELECT s.full_name, COUNT(o.id) AS orders_count,
        COUNT(o.id) FILTER (WHERE o.status_code = 'open') AS open_count,
        COUNT(o.id) FILTER (WHERE o.status_code = 'closed') AS closed_count,
@@ -9,9 +7,6 @@ LEFT JOIN orders AS o ON o.staff_id = s.id
 GROUP BY s.id, s.full_name
 ORDER BY orders_count DESC, s.full_name;
 
--- 2.2.2. Сотрудники с суммой закрытых заказов от 10 000 рублей.
--- Сначала одна строка на заказ, затем показатели сотрудника.
--- Средний чек считается по заказам, а не по отдельным позициям.
 SELECT s.full_name, COUNT(o.id) AS closed_count,
        SUM(COALESCE(t.total, 0)) AS closed_sales,
        ROUND(AVG(COALESCE(t.total, 0)), 2) AS average_check,
@@ -29,9 +24,6 @@ GROUP BY s.id, s.full_name
 HAVING SUM(COALESCE(t.total, 0)) >= 10000.00
 ORDER BY closed_sales DESC, s.full_name;
 
--- 2.2.3. Сравнение продаж категорий по календарным месяцам.
--- Учитываются только закрытые заказы, включая их неоплаченную часть.
--- CROSS JOIN строит сетку месяцев и категорий: отсутствие продаж даёт 0.
 SELECT periods.month, c.name AS category,
        COUNT(DISTINCT o.id) AS orders_count,
        COALESCE(SUM(oi.quantity) FILTER (WHERE o.id IS NOT NULL), 0) AS portions,
